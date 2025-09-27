@@ -7,87 +7,133 @@ from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.colors import LightSource
 from matplotlib import cm
 
-# === STEP 1: Load your TMC image ===
-image_path = 'C:/Desktop/Images/M162350671LC_pyr.tif'
+# --- Configuration ---
+# All main settings are in this section for easy modification.
+IMAGE_PATH = 'C:/Desktop/Images/M162350671LC_pyr.tif'
+CROP_Y_RANGE = (20000, 21024)
+CROP_X_RANGE = (1000, 2024)
+STEREO_SHIFT = 10  # Horizontal shift in pixels to simulate a stereo image.
+STEREO_NUM_DISPARITIES = 64
+STEREO_BLOCK_SIZE = 15
+SFS_BLUR_SIGMA = 3
+FUSION_WEIGHT_STEREO = 0.6 # Weight for the stereo component in the fusion.
+FUSION_WEIGHT_SFS = 0.4 # Weight for the SFS component in the fusion.
+FINAL_SMOOTH_SIGMA = 1.5
 
-if not os.path.exists(image_path):
-    print("❌ File not found.")
-    exit()
+def load_and_crop_image(path, y_range, x_range):
+    """Loads an image and crops a specific region."""
+    if not os.path.exists(path):
+        print(f"Error: File not found at '{path}'")
+        return None
+    
+    # Load the image in grayscale.
+    img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        print("Error: Failed to load the image.")
+        return None
 
-img = cv2.imread(image_path, 0)
-if img is None:
-    print("❌ Failed to load image.")
-    exit()
+    print(f"Image loaded successfully. Original shape: {img.shape}")
+    
+    # Crop a region from the image.
+    cropped_img = img[y_range[0]:y_range[1], x_range[0]:x_range[1]]
+    return cropped_img
 
-print("✅ Image loaded:", img.shape)
+def calculate_disparity(left_img, right_img):
+    """Calculates the disparity map from two stereo images."""
+    stereo = cv2.StereoBM_create(numDisparities=STEREO_NUM_DISPARITIES, blockSize=STEREO_BLOCK_SIZE)
+    disparity = stereo.compute(left_img, right_img).astype(np.float32) / 16.0
+    
+    # Normalize the disparity map to 0-255 range for visualization.
+    disparity_visual = cv2.normalize(disparity, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+    print("Disparity map generated.")
+    cv2.imwrite("disparity_map.png", disparity_visual)
+    return disparity_visual
 
-# === STEP 2: Crop a meaningful region ===
-# Crop a 1024 x 1024 region from center area
-crop = img[20000:21024, 1000:2024]  # (y range, x range)
-cv2.imwrite("left.png", crop)
+def calculate_sfs_slope(image):
+    """Estimates the slope from image brightness gradients (Shape-from-Shading)."""
+    # Calculate gradients using a Sobel filter.
+    blurred = gaussian_filter(image, sigma=SFS_BLUR_SIGMA)
+    dx = sobel(blurred, axis=1)  # Change in the x-direction
+    dy = sobel(blurred, axis=0)  # Change in the y-direction
+    
+    # Calculate the total slope magnitude using the hypotenuse.
+    slope = np.hypot(dx, dy)
+    
+    # Normalize the slope map for visualization.
+    slope_norm = cv2.normalize(slope, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+    print("SFS slope map generated.")
+    cv2.imwrite("sfs_slope_map.png", slope_norm)
+    return slope_norm
 
-# === STEP 3: Simulate Stereo by shifting horizontally ===
-right = crop[:, 10:]
-right = cv2.copyMakeBorder(right, 0, 0, 10, 0, cv2.BORDER_REPLICATE)
-cv2.imwrite("right.png", right)
+def plot_3d_dem(dem_data, title="3D Digital Elevation Model"):
+    """Creates a 3D surface plot of the DEM data."""
+    X, Y = np.meshgrid(range(dem_data.shape[1]), range(dem_data.shape[0]))
+    fig = plt.figure(figsize=(12, 8))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Create the surface plot.
+    ax.plot_surface(X, Y, dem_data, cmap='terrain', rstride=1, cstride=1, linewidth=0, antialiased=True)
+    ax.set_title(title)
+    ax.set_xlabel("X coordinate")
+    ax.set_ylabel("Y coordinate")
+    ax.set_zlabel("Elevation (normalized)")
+    
+    plt.savefig("final_dem_3d.png", dpi=300)
+    print("3D plot saved as 'final_dem_3d.png'")
+    plt.show()
 
-# === STEP 4: Disparity Map using StereoBM ===
-left_img = cv2.imread("left.png", 0)
-right_img = cv2.imread("right.png", 0)
+def plot_2d_shaded_relief(dem_data, title="Shaded Relief Map"):
+    """Creates a 2D shaded relief view of the DEM with a lighting effect."""
+    # Set up the light source.
+    ls = LightSource(azdeg=315, altdeg=45)
+    
+    # Apply shading to the DEM.
+    shaded_map = ls.shade(dem_data, cmap=cm.terrain, vert_exag=1.2, blend_mode='soft')
 
-stereo = cv2.StereoBM_create(numDisparities=64, blockSize=15)
-disparity = stereo.compute(left_img, right_img).astype(np.float32) / 16.0
-disp_vis = cv2.normalize(disparity, None, 0, 255, cv2.NORM_MINMAX)
-disp_vis = np.uint8(disp_vis)
-cv2.imwrite("disparity_map.png", disp_vis)
+    plt.figure(figsize=(10, 8))
+    plt.imshow(shaded_map)
+    plt.title(title)
+    plt.axis('off')
+    
+    plt.savefig("final_dem_2d_shaded.png", dpi=300)
+    print("2D shaded relief map saved as 'final_dem_2d_shaded.png'")
+    plt.show()
 
-# === STEP 5: Simulated SFS using brightness gradients ===
-blurred = gaussian_filter(left_img, sigma=3)
-dx = sobel(blurred, axis=1)
-dy = sobel(blurred, axis=0)
-slope = np.hypot(dx, dy)
+def main():
+    """The main function that orchestrates the entire process."""
+    
+    # Step 1: Load and crop the source image.
+    left_image = load_and_crop_image(IMAGE_PATH, CROP_Y_RANGE, CROP_X_RANGE)
+    if left_image is None:
+        return # Exit if the image fails to load.
 
-if np.isnan(slope).any() or np.isinf(slope).any():
-    print("❌ Slope contains invalid values.")
-    exit()
+    # Step 2: Simulate a stereo pair from the single cropped image.
+    # The original crop will serve as the 'left' image.
+    # Shift the 'left' image horizontally to create the 'right' image.
+    right_image = np.roll(left_image, -STEREO_SHIFT, axis=1)
+    
+    # Step 3: Generate the disparity map using Stereo Vision.
+    disparity_map = calculate_disparity(left_image, right_image)
+    
+    # Step 4: Generate the slope map using Shape-from-Shading.
+    sfs_map = calculate_sfs_slope(left_image)
+    
+    # Step 5: Fuse the two maps to create a hybrid DEM.
+    # First, normalize both maps to a 0-1 range.
+    disp_norm = disparity_map.astype(np.float32) / 255.0
+    sfs_norm = sfs_map.astype(np.float32) / 255.0
+    
+    # Fuse them using a weighted average.
+    fused_dem = (FUSION_WEIGHT_STEREO * disp_norm) + (FUSION_WEIGHT_SFS * sfs_norm)
+    print("DEMs fused successfully.")
+    
+    # Step 6: Apply a Gaussian filter to smooth the final DEM and reduce noise.
+    fused_smooth_dem = gaussian_filter(fused_dem, sigma=FINAL_SMOOTH_SIGMA)
+    
+    # Step 7: Plot the final Digital Elevation Model.
+    plot_3d_dem(fused_smooth_dem, title="Final Hybrid DEM (3D View)")
+    plot_2d_shaded_relief(fused_smooth_dem, title="Final Hybrid DEM (2D Shaded Relief)")
 
-slope_min, slope_max = np.min(slope), np.max(slope)
-if slope_max - slope_min == 0:
-    print("❌ Invalid slope range.")
-    exit()
-
-slope_norm = ((slope - slope_min) / (slope_max - slope_min)) * 255
-sfs_vis = slope_norm.astype(np.uint8)
-cv2.imwrite("sfs_slope_map.png", sfs_vis)
-
-# === STEP 6: Hybrid Fusion (Stereo + SFS) ===
-disp_norm = (disp_vis.astype(np.float32) - disp_vis.min()) / (disp_vis.max() - disp_vis.min())
-sfs_norm = (sfs_vis.astype(np.float32) - sfs_vis.min()) / (sfs_vis.max() - sfs_vis.min())
-
-# Weighted fusion
-fused = 0.6 * disp_norm + 0.4 * sfs_norm
-
-# === STEP 7: Smooth the fused DEM ===
-fused_smooth = gaussian_filter(fused, sigma=1.5)
-
-# === STEP 8: 3D Plot of Terrain ===
-X, Y = np.meshgrid(range(fused_smooth.shape[1]), range(fused_smooth.shape[0]))
-fig = plt.figure(figsize=(10, 6))
-ax = fig.add_subplot(111, projection='3d')
-ax.plot_surface(X, Y, fused_smooth, cmap='terrain', linewidth=0, antialiased=True)
-plt.title("Final Output: Smoothed Simulated Hybrid DEM")
-plt.tight_layout()
-plt.savefig("fused_dem_smooth.png", dpi=300)
-plt.show()
-
-# === Optional: Lighting-based 2D terrain view ===
-ls = LightSource(azdeg=315, altdeg=45)
-rgb = ls.shade(fused_smooth, cmap=cm.terrain, vert_exag=1, blend_mode='soft')
-
-plt.figure(figsize=(10, 6))
-plt.imshow(rgb)
-plt.title("Hybrid DEM (2D View with Lighting)")
-plt.axis('off')
-plt.tight_layout()
-plt.savefig("fused_lit_dem.png", dpi=300)
-plt.show()
+# Standard Python entry point to run the script.
+if __name__ == "__main__":
+    main()
