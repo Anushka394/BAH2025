@@ -22,11 +22,11 @@ The process works as follows:
 
 ## How to Use
 
-1.  **Get a Lunar Image**: Download a high-resolution grayscale lunar image (e.g., a `.tif` or `.png` file). This project was tested with TMC (Terrain Mapping Camera) data.
+1.  **Get a Lunar Image**: Download a high-resolution grayscale lunar image. This project was tested with TMC (Terrain Mapping Camera) data.
 2.  **Update the Script**: Open the Python script and update the `IMAGE_PATH` variable to point to the location of your downloaded image file.
     ```python
     # Update this line with the path to your image
-    IMAGE_PATH = 'path/to/your/lunar_image.tif'
+    IMAGE_PATH = 'path/to/your/lunar_image.format'
     ```
 3.  **Run the Script**: Execute the Python script. The program will process the image and generate several output files in the same directory:
     - `disparity_map.png`: The depth map from the stereo algorithm.
